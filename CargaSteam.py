@@ -1737,158 +1737,46 @@ def cargar_actividades_excel(funcionario_id):
 
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-def cargar_actividades_excell():
-    st.header("Cargar Actividades Excel")
-
-    # Ingreso del ID del funcionario
-    funcionario_id = st.text_input("Ingrese el ID del funcionario")
-
-    if not funcionario_id:
-        st.warning("Por favor, ingrese un ID de funcionario.")
-        return
-
-    archivo_excel = st.file_uploader("Sube un archivo Excel con las actividades", type=["xlsx"])
-
-    if archivo_excel:
-        try:
-            df = pd.read_excel(archivo_excel)
-
-            columnas_requeridas = ['funcion', 'cantidad', 'tiempo_minimo', 'tiempo_medio', 'tiempo_maximo', 'unidad', 'comentarios']
-            if not all(col in df.columns for col in columnas_requeridas):
-                st.error("El archivo debe contener las siguientes columnas: " + ", ".join(columnas_requeridas))
-                return
-
-            tenant = st.session_state.get("empresa")
-            if not tenant:
-                st.error("No se ha seleccionado una empresa.")
-                return
-
-            conn = get_connection(tenant)
-            cursor = conn.cursor()
-
-            # Insertar actividades
-            for _, row in df.iterrows():
-                # Cálculo de tiempo por actividad
-                if row['unidad'] == 'minutos':
-                    row['tiempo_minimo'] /= 60
-                    row['tiempo_medio'] /= 60
-                    row['tiempo_maximo'] /= 60
-
-                cantidad = Decimal(row['cantidad']) if pd.notna(row['cantidad']) else Decimal(0)
-                tiempo_minimo = Decimal(row['tiempo_minimo']) if pd.notna(row['tiempo_minimo']) else Decimal(0)
-                tiempo_medio = Decimal(row['tiempo_medio']) if pd.notna(row['tiempo_medio']) else Decimal(0)
-                tiempo_maximo = Decimal(row['tiempo_maximo']) if pd.notna(row['tiempo_maximo']) else Decimal(0)
-
-                tiempo_por_actividad = (tiempo_minimo + (4 * tiempo_medio) + tiempo_maximo) / 6 * cantidad
-
-                cursor.execute(f"""
-                    SELECT COALESCE(MAX(numero_actividad), 0) + 1 
-                    FROM {tenant}.tb_actividades 
-                    WHERE id_funcionario = %s
-                """, (funcionario_id,))
-                numero_actividad = cursor.fetchone()[0]
-
-                cursor.execute(f"""
-                    INSERT INTO {tenant}.tb_actividades 
-                    (id_funcionario, numero_actividad, funcion, cantidad, tiempo_minimo, tiempo_medio, tiempo_maximo, unidad, comentarios, tiempo_por_actividad)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    funcionario_id,
-                    numero_actividad,
-                    row['funcion'],
-                    cantidad,
-                    tiempo_minimo,
-                    tiempo_medio,
-                    tiempo_maximo,
-                    row['unidad'],
-                    row['comentarios'],
-                    tiempo_por_actividad
-                ))
-
-                # Actualizar carga
-                cursor.execute(f'''
-                    SELECT tiempo_laborado, horas_trabajo FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s
-                ''', (funcionario_id,))
-                carga_trabajo_data = cursor.fetchone()
-                if carga_trabajo_data:
-                    tiempo_laborado_actual, horas_trabajo = carga_trabajo_data
-                    nuevo_tiempo_laborado = tiempo_laborado_actual + tiempo_por_actividad
-                    horas_trabajo = horas_trabajo if horas_trabajo else 1
-
-                    carga_total_trabajo = (nuevo_tiempo_laborado / horas_trabajo) * 100
-                    carga_total_trabajo = round(carga_total_trabajo, 2)
-
-                    cursor.execute(f'''
-                        UPDATE {tenant}.tb_carga_trabajo
-                        SET tiempo_laborado = %s, carga_total_trabajo = %s
-                        WHERE funcionario_id = %s
-                    ''', (nuevo_tiempo_laborado, carga_total_trabajo, funcionario_id))
-
-            # Registrar en historial
-            nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
-            empresa = st.session_state.get('empresa', 'Desconocida')
-            accion = f"Superadmin subió actividades para el funcionario con ID {funcionario_id}"
-
-            cursor.execute(f"""
-                INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
-                VALUES (%s, %s, %s, %s)
-            """, (funcionario_id, nombre_usuario, empresa, accion))
-
-            conn.commit()
-            st.success("Actividades cargadas exitosamente y registradas en el historial.")
-
-        except Exception as e:
-            st.error(f"Error al procesar el archivo: {e}")
-        finally:
-            if 'cursor' in locals():
-                cursor.close()
-            if 'conn' in locals():
-                conn.close()
-
-
-#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+# Inicialización del estado de sesión
+for key, default in [("logueado", False), ("rol", None), ("usuario_id", None), ("nombre_usuario", ""), ("empresa", None)]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # Login
 def login():
     st.title("🔐 Inicio de Sesión")
     
-    # Selección de empresa
     empresa = st.selectbox("Selecciona la empresa a la que perteneces", [
         "empresa1", "empresa2", "empresa3", "empresa4", "empresa5", "public"
     ])
     
-    # Ingreso de credenciales
     id_usuario = st.text_input("ID de Usuario")
     contrasena = st.text_input("Contraseña", type="password")
 
     if st.button("Iniciar Sesión"):
         if id_usuario and contrasena:
             try:
-                # Obtener la conexión y verificar el usuario en el esquema de la empresa seleccionada
-                conn = get_connection(empresa)  # Usamos la empresa seleccionada en la conexión
-                cursor = conn.cursor()
-                cursor.execute(""" 
-                    SELECT usuario, rol FROM tb_usuarios 
-                    WHERE id = %s AND contrasena = %s
-                """, (id_usuario, contrasena))  # Usamos las columnas correctas
-                resultado = cursor.fetchone()
+                conn = get_connection(empresa)
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT usuario, rol FROM tb_usuarios 
+                        WHERE id = %s AND contrasena = %s
+                    """, (id_usuario, contrasena))
+                    resultado = cursor.fetchone()
                 conn.close()
 
                 if resultado:
                     nombre_usuario, rol = resultado
-                    # Guardamos los datos en la sesión
-                    st.session_state.logueado = True
-                    st.session_state.rol = rol
-                    st.session_state.usuario_id = id_usuario  # Guardamos el ID de usuario
-                    st.session_state.nombre_usuario = nombre_usuario
-                    st.session_state.empresa = empresa  # Guardamos la empresa seleccionada
-
+                    st.session_state.update({
+                        "logueado": True,
+                        "rol": rol,
+                        "usuario_id": id_usuario,
+                        "nombre_usuario": nombre_usuario,
+                        "empresa": empresa
+                    })
                     st.success(f"Bienvenido {nombre_usuario} ({rol})")
-                    st.rerun()  # Recargar la aplicación después de loguearse
+                    # No usar st.experimental_rerun()
+                    # Simplemente salir de la función para que menu_principal detecte que está logueado
                 else:
                     st.error("ID o contraseña incorrectos.")
             except Exception as e:
@@ -1896,116 +1784,108 @@ def login():
         else:
             st.warning("Por favor, completa todos los campos.")
 
-# Estado de sesión
-if "logueado" not in st.session_state:
-    st.session_state.logueado = False
-if "rol" not in st.session_state:
-    st.session_state.rol = None
-if "usuario_id" not in st.session_state:
-    st.session_state.usuario_id = None
-if "nombre_usuario" not in st.session_state:
-    st.session_state.nombre_usuario = ""
-
-# Home
 def home():
     st.title("Bienvenido a la Aplicación de Workload")
     st.write(""" 
-    Workload ofrece un seguimiento eficiente y en tiempo real de las asignaciones laborales, facilitando la gestión de tareas y aumentando la productividad en distintos departamentos o equipos. Cuenta con una interfaz intuitiva que permite monitorear cargas de trabajo, asignar responsabilidades y optimizar la distribución de tareas, garantizando así una operación más organizada y eficaz.
+        Workload ofrece un seguimiento eficiente y en tiempo real de las asignaciones laborales, facilitando la gestión de tareas y aumentando la productividad en distintos departamentos o equipos. Cuenta con una interfaz intuitiva que permite monitorear cargas de trabajo, asignar responsabilidades y optimizar la distribución de tareas, garantizando así una operación más organizada y eficaz.
     """)
 
 def menu_principal():
     if not st.session_state.logueado:
         login()
+        return
+
+    st.sidebar.title("Menú Principal")
+    st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
+    st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
+    if st.sidebar.button("🔁 Cerrar sesión"):
+        for key in ["logueado", "rol", "usuario_id", "nombre_usuario", "empresa"]:
+            st.session_state.pop(key, None)
+        st.session_state["logueado"] = False
+        # No hay st.experimental_rerun, simplemente refresca la página
+        st.experimental_rerun() if hasattr(st, "experimental_rerun") else None
+        return
+
+    # ----- SUPERADMIN -----
+    if st.session_state.rol == "Superadmin":
+        opcion = st.sidebar.radio("Selecciona una opción (Superadmin):", [
+            "🏠 Inicio",
+            "🔍 Ver Carga de Trabajo por ID",
+            "📋 Ver Todas las Cargas de Trabajo",
+            "➕ Detalles de Periodo de Estudio",
+            "📝 Agregar Actividad",
+            "❌ Eliminar Funcionario",
+            "🗑️ Eliminar Actividad",
+            "✏️ Modificar Actividad",
+            "📄 Historial de Modificaciones",
+            "🆕 Crear Nueva Cuenta",
+            "📤 Cargar actividades Excel"
+        ])
+
+    # ----- ADMIN -----
+    elif st.session_state.rol == "Administrador":
+        opcion = st.sidebar.radio("Selecciona una opción:", [
+            "🏠 Inicio",
+            "🔍 Ver Carga de Trabajo por ID",
+            "📋 Ver Todas las Cargas de Trabajo",
+            "➕ Detalles de Periodo de Estudio",
+            "📝 Agregar Actividad",
+            "❌ Eliminar Funcionario",
+            "🗑️ Eliminar Actividad",
+            "✏️ Modificar Actividad",
+            "📄 Historial de Modificaciones",
+            "🆕 Crear Nueva Cuenta"
+        ])
+
+    # ----- USUARIO -----
+    elif st.session_state.rol == "Usuario":
+        opcion = st.sidebar.radio("Selecciona una opción:", [
+            "🏠 Inicio",
+            "➕ Detalles de Periodo de EstudioU",
+            "📝 Agregar ActividadU",
+            "✏️ Modificar ActividadU",
+            "🗑️ Eliminar ActividadU",
+            "📤 Cargar actividades desde Excel"
+        ])
     else:
-        st.sidebar.title("Menú Principal")
-        st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
-        st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
+        st.error("Rol no reconocido.")
+        return
 
-        if st.sidebar.button("🔁 Cerrar sesión"):
-            for key in ["logueado", "rol", "usuario_id", "nombre_usuario", "empresa"]:
-                st.session_state.pop(key, None)
-            st.rerun()
+    # ---------------- FUNCIONES PARA TODOS LOS ROLES ----------------
+    if opcion == "🏠 Inicio":
+        home()
+    elif opcion == "🔍 Ver Carga de Trabajo por ID":
+        ver_carga_trabajo()
+    elif opcion == "📋 Ver Todas las Cargas de Trabajo":
+        ver_todas_cargas_trabajo()
+    elif opcion == "➕ Detalles de Periodo de Estudio":
+        agregar_funcionario()
+    elif opcion == "📝 Agregar Actividad":
+        agregar_actividad()
+    elif opcion == "❌ Eliminar Funcionario":
+        eliminar_funcionario()
+    elif opcion == "🗑️ Eliminar Actividad":
+        eliminar_actividad()
+    elif opcion == "✏️ Modificar Actividad":
+        modificar_actividad()
+    elif opcion == "📄 Historial de Modificaciones":
+        mostrar_historial_modificaciones()
+    elif opcion == "🆕 Crear Nueva Cuenta":
+        crear_cuenta()
+    elif opcion == "➕ Detalles de Periodo de EstudioU":
+        agregar_funcionarioU()
+    elif opcion == "📝 Agregar ActividadU":
+        agregar_actividadU(st.session_state.usuario_id)
+    elif opcion == "✏️ Modificar ActividadU":
+        modificar_actividadU()
+    elif opcion == "🗑️ Eliminar ActividadU":
+        eliminar_actividadU()
+    elif opcion == "📤 Cargar actividades desde Excel":
+        cargar_actividades_excel(st.session_state.usuario_id)
+    elif opcion == "📤 Cargar actividades Excel":
+        cargar_actividades_excell()
 
-        # ----- SUPERADMIN -----
-        if st.session_state.rol == "Superadmin":
-            opcion = st.sidebar.radio("Selecciona una opción (Superadmin):", [
-                "🏠 Inicio",
-                "🔍 Ver Carga de Trabajo por ID",
-                "📋 Ver Todas las Cargas de Trabajo",
-                "➕ Detalles de Periodo de Estudio",
-                "📝 Agregar Actividad",
-                "❌ Eliminar Funcionario",
-                "🗑️ Eliminar Actividad",
-                "✏️ Modificar Actividad",
-                "📄 Historial de Modificaciones",
-                "🆕 Crear Nueva Cuenta",
-                "📤 Cargar actividades Excel"
-            ])
-
-        # ----- ADMIN -----
-        elif st.session_state.rol == "Administrador":
-            opcion = st.sidebar.radio("Selecciona una opción:", [
-                "🏠 Inicio",
-                "🔍 Ver Carga de Trabajo por ID",
-                "📋 Ver Todas las Cargas de Trabajo",
-                "➕ Detalles de Periodo de Estudio",
-                "📝 Agregar Actividad",
-                "❌ Eliminar Funcionario",
-                "🗑️ Eliminar Actividad",
-                "✏️ Modificar Actividad",
-                "📄 Historial de Modificaciones",
-                "🆕 Crear Nueva Cuenta"
-            ])
-
-        # ----- USUARIO -----
-        elif st.session_state.rol == "Usuario":
-            opcion = st.sidebar.radio("Selecciona una opción:", [
-                "🏠 Inicio",
-                "➕ Detalles de Periodo de EstudioU",
-                "📝 Agregar ActividadU",
-                "✏️ Modificar ActividadU",
-                "🗑️ Eliminar ActividadU",
-                "📤 Cargar actividades desde Excel"
-            ])
-        else:
-            st.error("Rol no reconocido.")
-            return
-
-        # ---------------- FUNCIONES PARA TODOS LOS ROLES ----------------
-        if opcion == "🏠 Inicio":
-            home()
-        elif opcion == "🔍 Ver Carga de Trabajo por ID":
-            ver_carga_trabajo()
-        elif opcion == "📋 Ver Todas las Cargas de Trabajo":
-            ver_todas_cargas_trabajo()
-        elif opcion == "➕ Detalles de Periodo de Estudio":
-            agregar_funcionario()
-        elif opcion == "📝 Agregar Actividad":
-            agregar_actividad()
-        elif opcion == "❌ Eliminar Funcionario":
-            eliminar_funcionario()
-        elif opcion == "🗑️ Eliminar Actividad":
-            eliminar_actividad()
-        elif opcion == "✏️ Modificar Actividad":
-            modificar_actividad()
-        elif opcion == "📄 Historial de Modificaciones":
-            mostrar_historial_modificaciones()
-        elif opcion == "🆕 Crear Nueva Cuenta":
-            crear_cuenta()
-        elif opcion == "➕ Detalles de Periodo de EstudioU":
-            agregar_funcionarioU()
-        elif opcion == "📝 Agregar ActividadU":
-            agregar_actividadU(st.session_state.usuario_id)
-        elif opcion == "✏️ Modificar ActividadU":
-            modificar_actividadU()
-        elif opcion == "🗑️ Eliminar ActividadU":
-            eliminar_actividadU()
-        elif opcion == "📤 Cargar actividades desde Excel":
-            cargar_actividades_excel(st.session_state.usuario_id)
-        elif opcion == "📤 Cargar actividades Excel":
-            cargar_actividades_excell()
-
-
+# Asegúrate de que las funciones usadas (ejemplo: ver_carga_trabajo) estén definidas en tu código
 
 # Función principal
 menu_principal()
