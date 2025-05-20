@@ -41,25 +41,21 @@ if st.session_state.get("logueado"):
     )
 
 
-#Concetar a la empresa
 def get_connection(empresa):
     try:
-        # Conexión con la base de datos y parámetros necesarios
         conn = psycopg2.connect(
-            dbname="bd_admin",  # Nombre de la base de datos
-            user="postgres",  # Usuario de la base de datos
-            password="Admin1234",  # Contraseña de la base de datos
-            host="localhost",  # Dirección del servidor
-            port="5432"  # Puerto de la base de datos
+            dbname="railway",
+            user="postgres",
+            password="eqWOTMrsVejNlRKwcNhvPiRbXRyKYyKM",
+            host="nozomi.proxy.rlwy.net",
+            port="11260"
         )
-        # Cambiar el esquema de la conexión según la empresa seleccionada
         cursor = conn.cursor()
-        cursor.execute(f"SET search_path TO {empresa};")  # Establecer el esquema seleccionado
+        cursor.execute(f"SET search_path TO {empresa};")  # Cambia al esquema que quieras usar
         return conn
     except Exception as e:
         st.error(f"Error de conexión: {e}")
-        return None  # Retornar None si la conexión falla
-
+        return None
 # Función para la pantalla de inicio
 def home():
     st.title("Bienvenido a la Aplicación de Cargas de Trabajo")
