@@ -5,33 +5,30 @@ import io
 from PIL import Image
 import streamlit as st
 import pandas as pd
+import requests
+from io import BytesIO
 
-# Fuerza el ancho total del contenido en Streamlit
-st.markdown("""
-    <style>
-        .main .block-container {
-            max-width: 100% !important;
-            padding-left: 2rem;
-            padding-right: 2rem;
-        }
-        table {
-            width: 100% !important;
-            table-layout: auto;
-        }
-        th, td {
-            text-align: left;
-            padding: 8px 12px;
-        }
-    </style>
-""", unsafe_allow_html=True)
+def load_image_from_url(url):
+    response = requests.get(url)
+    response.raise_for_status()  # para avisar si falla la descarga
+    img = Image.open(BytesIO(response.content))
+    return img
 
+# URLs directas que compartiste
+logo_url = "https://i.postimg.cc/RZyrJ6r2/logo.png"
+workload_logo_url = "https://i.postimg.cc/4NwsyxxT/workload-logo-hd.png"
 
-# Cargar imagen para el logo
-logo_path = "C:/Users/Usuario/Desktop/Cargas de trabajo/Ultima version/logo.png"
-logo_image = Image.open(logo_path)
+# Cargar y mostrar logo principal
+logo_image = load_image_from_url(logo_url)
 st.image(logo_image, width=200)
 
-# Mostrar empresa en la parte superior del sidebar (si está logueado)
+# Mostrar logo en sidebar
+sidebar_logo = load_image_from_url(workload_logo_url)
+st.sidebar.image(sidebar_logo, width=150)
+
+
+
+# Mostrar empresa en el sidebar si está logueado
 if st.session_state.get("logueado"):
     st.sidebar.markdown(
         f"""
@@ -43,15 +40,8 @@ if st.session_state.get("logueado"):
         unsafe_allow_html=True
     )
 
-# Mostrar logo en el sidebar (usando la imagen cargada)
-logo_path = "workload_logo_hd.png"
-logo_image = Image.open(logo_path)
-st.sidebar.image(logo_image, width=150)
 
-
-import psycopg2
-import streamlit as st
-
+#Concetar a la empresa
 def get_connection(empresa):
     try:
         # Conexión con la base de datos y parámetros necesarios
