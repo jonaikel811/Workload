@@ -45,38 +45,45 @@ st.sidebar.image(logo_image, width=150)
 import psycopg2
 import streamlit as st
 
-from psycopg2 import OperationalError
-
-# URL de conexión de Railway
 DATABASE_URL = "postgresql://postgres:eqWOTMrsVejNlRKwcNhvPiRbXRyKYyKM@nozomi.proxy.rlwy.net:11260/railway"
 
-def get_connection():
+# Lista de esquemas válidos
+ESQUEMAS_VALIDOS = {"public", "empresa1", "empresa2", "empresa3", "empresa4", "empresa5"}
+
+def get_connection(empresa):
     try:
+        if empresa not in ESQUEMAS_VALIDOS:
+            st.error(f"Esquema '{empresa}' no es válido. Esquemas válidos: {', '.join(ESQUEMAS_VALIDOS)}")
+            return None
+        # Conectar usando la URL de Railway
         conn = psycopg2.connect(DATABASE_URL)
-        print("Conexión exitosa a Railway PostgreSQL.")
+        cursor = conn.cursor()
+        # Cambiar al esquema de la empresa
+        cursor.execute(f"SET search_path TO {empresa};")
+        # Verificar el esquema activo
+        cursor.execute("SHOW search_path;")
+        esquema_activo = cursor.fetchone()
+        print(f"Esquema activo: {esquema_activo}")
         return conn
-    except OperationalError as e:
-        print(f"Error operacional al conectar a la base de datos: {e}")
-        return None
     except Exception as e:
-        print(f"Error general al conectar a la base de datos: {e}")
+        st.error(f"Error de conexión: {e}")
         return None
 
+# Ejemplo de uso:
 if __name__ == "__main__":
-    conn = get_connection()
+    conn = get_connection("empresa1")
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("SELECT version();")
-            version = cur.fetchone()
-            print(f"Versión de PostgreSQL: {version[0]}")
+            print(cur.fetchone())
             cur.close()
         except Exception as e:
             print(f"Error ejecutando consulta: {e}")
         finally:
             conn.close()
     else:
-        print("No se pudo conectar a la base de datos Railway.")
+        print("No se pudo conectar a la base de datos.")
 def home():
     st.title("Bienvenido a la Aplicación de Cargas de Trabajo")
     st.write("""
