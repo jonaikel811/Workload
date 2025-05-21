@@ -45,24 +45,38 @@ st.sidebar.image(logo_image, width=150)
 import psycopg2
 import streamlit as st
 
-def get_connection(empresa):
-    try:
-        # Conexión con la base de datos y parámetros necesarios
-        conn = psycopg2.connect(
-            dbname="bd_admin",  # Nombre de la base de datos
-            user="postgres",  # Usuario de la base de datos
-            password="Admin1234",  # Contraseña de la base de datos
-            host="192.168.0.122",  # Dirección del servidor
-            port="5432"  # Puerto de la base de datos
-        )
-        # Cambiar el esquema de la conexión según la empresa seleccionada
-        cursor = conn.cursor()
-        cursor.execute(f"SET search_path TO {empresa};")  # Establecer el esquema seleccionado
-        return conn
-    except Exception as e:
-        st.error(f"Error de conexión: {e}")
-        return None  # Retornar None si la conexión falla
+from psycopg2 import OperationalError
 
+# URL de conexión de Railway
+DATABASE_URL = "postgresql://postgres:eqWOTMrsVejNlRKwcNhvPiRbXRyKYyKM@nozomi.proxy.rlwy.net:11260/railway"
+
+def get_connection():
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        print("Conexión exitosa a Railway PostgreSQL.")
+        return conn
+    except OperationalError as e:
+        print(f"Error operacional al conectar a la base de datos: {e}")
+        return None
+    except Exception as e:
+        print(f"Error general al conectar a la base de datos: {e}")
+        return None
+
+if __name__ == "__main__":
+    conn = get_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT version();")
+            version = cur.fetchone()
+            print(f"Versión de PostgreSQL: {version[0]}")
+            cur.close()
+        except Exception as e:
+            print(f"Error ejecutando consulta: {e}")
+        finally:
+            conn.close()
+    else:
+        print("No se pudo conectar a la base de datos Railway.")
 def home():
     st.title("Bienvenido a la Aplicación de Cargas de Trabajo")
     st.write("""
