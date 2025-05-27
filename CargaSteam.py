@@ -145,7 +145,6 @@ def ver_carga_trabajo():
                     conexion.close()
 
 
-# Función ver todas las cargas de trabajo
 def ver_todas_cargas_trabajo():
   
     def mostrar_cargas(orden="ASC"):
@@ -164,8 +163,7 @@ def ver_todas_cargas_trabajo():
                         ct.tiempo_laborado 
                     FROM {tenant}.tb_carga_trabajo ct
                     JOIN {tenant}.tb_funcionarios f ON ct.funcionario_id = f."Id"
-                    ORDER BY ct.funcionario_id {orden}
-                """)
+                """)  # sin ORDER BY para controlar con pandas
                 rows = cursor.fetchall()
 
                 if rows:
@@ -177,69 +175,53 @@ def ver_todas_cargas_trabajo():
                         "Tiempo laborado"
                     ])
 
+                    df["Identificación del funcionario"] = df["Identificación del funcionario"].astype(str)
+                    df = df.sort_values(by="Identificación del funcionario", ascending=(orden == "ASC"))
+
                     st.dataframe(df.style.set_properties(**{
                         'text-align': 'left',
                         'white-space': 'nowrap'
                     }), use_container_width=True)
 
-                    # Botón de descarga en formato CSV
-                    csv = df.to_csv(index=False).encode('utf-8')
+                    # CSV con apóstrofe para evitar problemas en Excel
+                    df_export = df.copy()
+                    df_export["Identificación del funcionario"] = df_export["Identificación del funcionario"].apply(lambda x: "'" + x)
+                    csv = df_export.to_csv(index=False).encode('utf-8')
                     if st.download_button("📥 Descargar como CSV", csv, "cargas_trabajo.csv", "text/csv"):
-                        # Registro en historial cuando se descarga CSV
-                        nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
-                        empresa = st.session_state.get('empresa', 'Desconocida')
-                        accion = "Descargó las cargas de trabajo como CSV"
+                        pass
 
-                        # Insertar en el historial
-                        cursor.execute(f"""
-                            INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
-                            VALUES (%s, %s, %s, %s)
-                        """, (nombre_usuario, nombre_usuario, empresa, accion))
-                        conexion.commit()
-
-                    # Botón de descarga en formato Excel
+                    # Excel con tabla real
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         df.to_excel(writer, index=False, sheet_name='CargasTrabajo')
+                        workbook  = writer.book
                         worksheet = writer.sheets['CargasTrabajo']
-                        for i, column in enumerate(df.columns):
-                            column_width = max(df[column].astype(str).map(len).max(), len(column)) + 5
-                            worksheet.set_column(i, i, column_width)
+
+                        # Ajustar ancho de columnas
+                        for i, col in enumerate(df.columns):
+                            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 5
+                            worksheet.set_column(i, i, max_len)
+
+                        # Crear tabla Excel real
+                        worksheet.add_table(0, 0, len(df), len(df.columns) - 1, {
+                            'columns': [{'header': col} for col in df.columns],
+                            'style': 'Table Style Medium 9',  # puedes cambiar el estilo
+                        })
+
                     output.seek(0)
                     excel_data = output.getvalue()
+
                     if st.download_button(
                         "📥 Descargar como Excel",
                         data=excel_data,
                         file_name='cargas_trabajo.xlsx',
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     ):
-                        # Registro en historial cuando se descarga Excel
-                        nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
-                        empresa = st.session_state.get('empresa', 'Desconocida')
-                        accion = "Descargó las cargas de trabajo como Excel"
-
-                        # Insertar en el historial
-                        cursor.execute(f"""
-                            INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
-                            VALUES (%s, %s, %s, %s)
-                        """, (nombre_usuario, nombre_usuario, empresa, accion))
-                        conexion.commit()
+                        pass
 
                 else:
                     st.info("No se encontraron registros.")
                 
-                # Registrar la acción de ver todas las cargas de trabajo
-                nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
-                empresa = st.session_state.get('empresa', 'Desconocida')
-                accion = "Vió todas las cargas de trabajo de los funcionarios"
-
-                # Insertar en la tabla de historial de modificaciones
-                cursor.execute(f"""
-                    INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
-                    VALUES (%s, %s, %s, %s)
-                """, (nombre_usuario, nombre_usuario, empresa, accion))
-                conexion.commit()  # Confirmar los cambios
-
             except Exception as e:
                 st.error(f"Error al consultar la base de datos: {e}")
             finally:
@@ -254,7 +236,6 @@ def ver_todas_cargas_trabajo():
         mostrar_cargas("ASC")
     else:
         mostrar_cargas("DESC")
-
 
 from datetime import datetime
 
