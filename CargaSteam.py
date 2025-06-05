@@ -7,6 +7,11 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO
+from datetime import datetime
+import pytz
+
+costa_rica_tz = pytz.timezone('America/Costa_Rica')
+ahora = datetime.now(costa_rica_tz)
 
 def load_image_from_url(url):
     response = requests.get(url)
@@ -17,30 +22,38 @@ def load_image_from_url(url):
 # URLs directas que compartiste
 logo_url = "https://i.postimg.cc/RZyrJ6r2/logo.png"
 workload_logo_url = "https://i.postimg.cc/4NwsyxxT/workload-logo-hd.png"
+logo_bn = "https://i.postimg.cc/cJ5n0Mww/Banco-Nacional-de-Costa-Rica-removebg-preview.png"
 
 # Cargar y mostrar logo principal
 logo_image = load_image_from_url(logo_url)
 st.image(logo_image, width=200)
 
 
+# Dentro del bloque else de if not st.session_state.logueado:
+empresa = st.session_state.get('empresa', 'public')
 
-# Mostrar empresa en el sidebar si está logueado
-if st.session_state.get("logueado"):
-    st.sidebar.markdown(
-        f"""
-        <div style='background-color: #f0f2f6; padding: 8px 12px; border-radius: 8px; 
-                    font-weight: bold; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);'>
-            🏢 {st.session_state.empresa}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+empresa = st.session_state.get('empresa')
+if empresa:
+    if empresa == "empresa3":
+        logo_bn = "https://i.postimg.cc/cJ5n0Mww/Banco-Nacional-de-Costa-Rica-removebg-preview.png"
+        st.sidebar.markdown(
+            f"""
+            <div style="display:flex; align-items:center; margin-bottom: 10px;">
+                <img src="{logo_bn}" width="100" style="margin-right:10px;" />
+                <span style="font-weight:bold; font-size:22px;">Banco Nacional</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.sidebar.markdown(f"🏢 **Empresa:** {empresa}")
+
+
 
 # Mostrar logo en el sidebar (usando la imagen cargada)
 logo_path = "workload_logo_hd.png"
 logo_image = Image.open(logo_path)
 st.sidebar.image(logo_image, width=150)
-
 
 import psycopg2
 import streamlit as st
@@ -101,15 +114,26 @@ def ver_carga_trabajo():
     # Botón para realizar la búsqueda
     if st.button("Buscar Carga de Trabajo"):
         if user_id:
-            # Obtener el esquema dinámico (tenant)
-            tenant = st.session_state.get('empresa', 'public')  # Si no está definido, se usa 'public' por defecto
-
-            # Conectar a la base de datos
-            conexion = get_connection(tenant)  # Cambio aquí para usar el esquema dinámico
+            tenant = st.session_state.get('empresa', 'public')
+            conexion = get_connection(tenant)
             if conexion:
                 cursor = conexion.cursor()
                 try:
-                    # Consulta para obtener la carga de trabajo con el esquema dinámico
+                    # Obtener el nombre del funcionario desde tb_usuarios
+                    cursor.execute(f"""
+                        SELECT usuario 
+                        FROM {tenant}.tb_usuarios 
+                        WHERE id = %s
+                    """, (user_id,))
+                    nombre_row = cursor.fetchone()
+
+                    if not nombre_row:
+                        st.info("No se encontró un usuario con ese ID.")
+                        return
+                    
+                    nombre_funcionario = nombre_row[0]
+
+                    # Obtener la carga de trabajo desde tb_carga_trabajo
                     cursor.execute(f"""
                         SELECT funcionario_id, carga_total_trabajo 
                         FROM {tenant}.tb_carga_trabajo 
@@ -118,26 +142,29 @@ def ver_carga_trabajo():
                     row = cursor.fetchone()
 
                     if row:
-                        # Si se encuentra el registro, mostrarlo con mejor visibilidad
                         funcionario_id, carga_total_trabajo = row
-                        resultado = f"Carga de trabajo del funcionario con ID {funcionario_id} es: {carga_total_trabajo} %"
+                        resultado = (
+                            f"Carga de trabajo del funcionario {nombre_funcionario}, "
+                            f"con ID {funcionario_id}, es: {carga_total_trabajo} %"
+                        )
 
-                        # Usar st.success, pero con un mejor contraste
-                        st.markdown(f'<p style="color: black; font-size: 18px; font-weight: bold;">{resultado}</p>', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<p style="color: black; font-size: 18px; font-weight: bold;">{resultado}</p>', 
+                            unsafe_allow_html=True
+                        )
 
-                        # Registrar la acción en el historial de modificaciones
+                        # Registrar acción en historial
                         nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
                         empresa = st.session_state.get('empresa', 'Desconocida')
-                        accion = f"Vió la carga de trabajo del funcionario con ID {funcionario_id}"
+                        accion = f"Vió la carga de trabajo del funcionario {nombre_funcionario} (ID {funcionario_id})"
 
-                        # Insertar en la tabla de historial de modificaciones
                         cursor.execute(f"""
                             INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
                             VALUES (%s, %s, %s, %s)
                         """, (user_id, nombre_usuario, empresa, accion))
-                        conexion.commit()  # Confirmar los cambios
+                        conexion.commit()
                     else:
-                        st.info("No se encontraron registros para este ID.")
+                        st.info("No se encontraron registros de carga de trabajo para este ID.")
                 except Exception as e:
                     st.error(f"Error al consultar la base de datos: {e}")
                 finally:
@@ -145,83 +172,99 @@ def ver_carga_trabajo():
                     conexion.close()
 
 
+
+# Función ver todas las cargas de trabajo con filtro por dependencia
 def ver_todas_cargas_trabajo():
-  
-    def mostrar_cargas(orden="ASC"):
+
+    def mostrar_cargas(orden="ASC", filtro_dependencia=None):
         tenant = st.session_state.get('empresa', 'public')
-        
+
         conexion = get_connection(tenant)
         if conexion:
             cursor = conexion.cursor()
             try:
-                cursor.execute(f"""
+                # Obtener todas las dependencias únicas para el filtro
+                cursor.execute(f'SELECT DISTINCT "Dependencia" FROM {tenant}.tb_funcionarios ORDER BY "Dependencia" ASC')
+                dependencias = [fila[0] for fila in cursor.fetchall() if fila[0] is not None]
+
+                # Filtro desplegable
+                dependencia_seleccionada = st.selectbox("Filtrar por dependencia:", ["Todas"] + dependencias)
+
+                # Construcción del query base
+                query = f"""
                     SELECT 
                         ct.funcionario_id, 
                         f."Nombre", 
+                        f."Dependencia",
                         ct.carga_total_trabajo, 
                         ct.horas_trabajo, 
                         ct.tiempo_laborado 
                     FROM {tenant}.tb_carga_trabajo ct
                     JOIN {tenant}.tb_funcionarios f ON ct.funcionario_id = f."Id"
-                """)  # sin ORDER BY para controlar con pandas
+                """
+
+                params = []
+                if dependencia_seleccionada != "Todas":
+                    query += ' WHERE f."Dependencia" = %s'
+                    params.append(dependencia_seleccionada)
+
+                query += f' ORDER BY ct.funcionario_id {orden}'
+
+                cursor.execute(query, params)
                 rows = cursor.fetchall()
 
                 if rows:
                     df = pd.DataFrame(rows, columns=[ 
                         "Identificación del funcionario",
                         "Nombre del funcionario",
+                        "Dependencia",
                         "Carga total de trabajo (%)",
                         "Horas de trabajo",
                         "Tiempo laborado"
                     ])
-
-                    df["Identificación del funcionario"] = df["Identificación del funcionario"].astype(str)
-                    df = df.sort_values(by="Identificación del funcionario", ascending=(orden == "ASC"))
 
                     st.dataframe(df.style.set_properties(**{
                         'text-align': 'left',
                         'white-space': 'nowrap'
                     }), use_container_width=True)
 
-                    # CSV con apóstrofe para evitar problemas en Excel
-                    df_export = df.copy()
-                    df_export["Identificación del funcionario"] = df_export["Identificación del funcionario"].apply(lambda x: "'" + x)
-                    csv = df_export.to_csv(index=False).encode('utf-8')
-                    if st.download_button("📥 Descargar como CSV", csv, "cargas_trabajo.csv", "text/csv"):
-                        pass
-
-                    # Excel con tabla real
+                    # Botón de descarga Excel
                     output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         df.to_excel(writer, index=False, sheet_name='CargasTrabajo')
-                        workbook  = writer.book
                         worksheet = writer.sheets['CargasTrabajo']
-
-                        # Ajustar ancho de columnas
-                        for i, col in enumerate(df.columns):
-                            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 5
-                            worksheet.set_column(i, i, max_len)
-
-                        # Crear tabla Excel real
-                        worksheet.add_table(0, 0, len(df), len(df.columns) - 1, {
-                            'columns': [{'header': col} for col in df.columns],
-                            'style': 'Table Style Medium 9',  # puedes cambiar el estilo
-                        })
-
+                        for i, column in enumerate(df.columns):
+                            column_width = max(df[column].astype(str).map(len).max(), len(column)) + 5
+                            worksheet.column_dimensions[chr(65 + i)].width = column_width
                     output.seek(0)
                     excel_data = output.getvalue()
-
                     if st.download_button(
                         "📥 Descargar como Excel",
                         data=excel_data,
                         file_name='cargas_trabajo.xlsx',
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     ):
-                        pass
-
+                        nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
+                        empresa = st.session_state.get('empresa', 'Desconocida')
+                        accion = "Descargó las cargas de trabajo como Excel"
+                        cursor.execute(f"""
+                            INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
+                            VALUES (%s, %s, %s, %s)
+                        """, (nombre_usuario, nombre_usuario, empresa, accion))
+                        conexion.commit()
                 else:
-                    st.info("No se encontraron registros.")
-                
+                    st.info("No se encontraron registros para los criterios seleccionados.")
+
+                # Registro en historial por ver datos
+                nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
+                empresa = st.session_state.get('empresa', 'Desconocida')
+                accion = f"Vió todas las cargas de trabajo{' filtradas por dependencia: ' + dependencia_seleccionada if dependencia_seleccionada != 'Todas' else ''}"
+                cursor.execute(f"""
+                    INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
+                    VALUES (%s, %s, %s, %s)
+                """, (nombre_usuario, nombre_usuario, empresa, accion))
+                conexion.commit()
+
             except Exception as e:
                 st.error(f"Error al consultar la base de datos: {e}")
             finally:
@@ -236,6 +279,8 @@ def ver_todas_cargas_trabajo():
         mostrar_cargas("ASC")
     else:
         mostrar_cargas("DESC")
+
+
 
 from datetime import datetime
 
@@ -441,7 +486,6 @@ def agregar_funcionario():
 
 # Función para agregar actividad
 def agregar_actividad():
-    
     # Asegúrate de obtener el esquema (tenant) de la sesión
     tenant = st.session_state.get('empresa', 'public')  # Obtenemos el esquema desde la sesión del usuario
 
@@ -464,6 +508,12 @@ def agregar_actividad():
             st.warning("Todos los campos deben ser completados.")
             return
 
+        # Validación lógica entre tiempos
+        if tiempo_minimo > tiempo_medio or tiempo_medio > tiempo_maximo:
+            st.warning("El tiempo mínimo no puede ser mayor que el medio o el máximo, y el medio no puede ser mayor que el máximo.")
+            return
+
+        # Conversión si está en minutos
         if unidad == "minutos":
             tiempo_minimo /= 60
             tiempo_medio /= 60
@@ -472,7 +522,7 @@ def agregar_actividad():
         tiempo_por_actividad = (tiempo_minimo + 4 * tiempo_medio + tiempo_maximo) / 6 * cantidad
 
         # Conectar a la base de datos
-        conexion = get_connection(tenant)  # Usamos el esquema dinámico aquí
+        conexion = get_connection(tenant)
         if conexion:
             cursor = conexion.cursor()
             try:
@@ -485,12 +535,7 @@ def agregar_actividad():
                 # Obtener el número de actividad más alto ya asignado para el funcionario
                 cursor.execute(f'SELECT MAX(numero_actividad) FROM {tenant}.tb_actividades WHERE id_funcionario = %s', (funcionario_id,))
                 max_numero_actividad = cursor.fetchone()[0]
-
-                # Si no hay ninguna actividad asignada, comenzar con el número 1
-                if max_numero_actividad is None:
-                    numero_actividad = 1
-                else:
-                    numero_actividad = max_numero_actividad + 1
+                numero_actividad = 1 if max_numero_actividad is None else max_numero_actividad + 1
 
                 # Insertar la actividad
                 cursor.execute(
@@ -512,21 +557,6 @@ def agregar_actividad():
                     (tiempo_por_actividad, funcionario_id, numero_actividad)
                 )
 
-                # Actualizar el tiempo laborado en la tabla tb_carga_trabajo
-                cursor.execute(
-                    f"""
-                    UPDATE {tenant}.tb_carga_trabajo
-                    SET tiempo_laborado = (
-                        SELECT SUM(tiempo_por_actividad)
-                        FROM {tenant}.tb_actividades
-                        WHERE id_funcionario = %s
-                        GROUP BY id_funcionario
-                    )
-                    WHERE funcionario_id = %s;
-                    """,
-                    (funcionario_id, funcionario_id)
-                )
-
                 # Verificar si el funcionario ya tiene un registro en tb_carga_trabajo
                 cursor.execute(f'SELECT * FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s', (funcionario_id,))
                 if not cursor.fetchone():
@@ -542,23 +572,36 @@ def agregar_actividad():
                         """,
                         (funcionario_id, funcionario_id)
                     )
+                else:
+                    cursor.execute(
+                        f"""
+                        UPDATE {tenant}.tb_carga_trabajo
+                        SET tiempo_laborado = (
+                            SELECT SUM(tiempo_por_actividad)
+                            FROM {tenant}.tb_actividades
+                            WHERE id_funcionario = %s
+                            GROUP BY id_funcionario
+                        )
+                        WHERE funcionario_id = %s;
+                        """,
+                        (funcionario_id, funcionario_id)
+                    )
 
-                # Actualizar el campo carga_total_trabajo después de agregar la actividad
-                cursor.execute(f"SELECT horas_trabajo, tiempo_laborado FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s", (funcionario_id,))
+                # Actualizar el campo carga_total_trabajo
+                cursor.execute(
+                    f"SELECT horas_trabajo, tiempo_laborado FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s", (funcionario_id,)
+                )
                 row = cursor.fetchone()
                 if row:
-                    horas_trabajo = row[0] if row[0] else 1  # Evitar división por cero
+                    horas_trabajo = row[0] if row[0] else 1
                     tiempo_laborado = row[1] if row[1] else 0
-                    carga_total_trabajo = (tiempo_laborado / horas_trabajo) * 100
-                    carga_total_trabajo = round(carga_total_trabajo, 2)
-
-                    # Actualizar el campo carga_total_trabajo en la base de datos
+                    carga_total_trabajo = round((tiempo_laborado / horas_trabajo) * 100, 2)
                     cursor.execute(
                         f"UPDATE {tenant}.tb_carga_trabajo SET carga_total_trabajo = %s WHERE funcionario_id = %s",
                         (carga_total_trabajo, funcionario_id)
                     )
 
-                # Registrar la acción en el historial
+                # Historial
                 nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
                 empresa = st.session_state.get('empresa', 'Desconocida')
                 accion = f"Agregó actividad {numero_actividad} para el funcionario con ID {funcionario_id}"
@@ -567,9 +610,7 @@ def agregar_actividad():
                     INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
                     VALUES (%s, %s, %s, %s)
                 """, (nombre_usuario, nombre_usuario, empresa, accion))
-                conexion.commit()
 
-                # Confirmar la transacción
                 conexion.commit()
                 st.success(f"Actividad {numero_actividad} agregada correctamente y tiempo laborado actualizado.")
             except Exception as e:
@@ -577,6 +618,7 @@ def agregar_actividad():
             finally:
                 cursor.close()
                 conexion.close()
+
 
 
 # Función para eliminar actividades seleccionadas y actualizar la carga total de trabajo
@@ -813,6 +855,11 @@ def modificar_actividad():
                         cantidad_nueva = Decimal(str(cantidad_nueva))
                         tiempo_minimo_nuevo = Decimal(str(tiempo_minimo_nuevo))
 
+                        # Validación adicional de tiempos
+                        if tiempo_minimo_nuevo > tiempo_medio_nuevo or tiempo_minimo_nuevo > tiempo_maximo_nuevo or tiempo_medio_nuevo > tiempo_maximo_nuevo:
+                            st.warning("El tiempo mínimo no puede ser mayor que el medio o el máximo, y el medio no puede ser mayor que el máximo.")
+                            return
+
                         # Fórmula para calcular el tiempo por actividad (igual a agregar_actividad)
                         tiempo_por_actividad_nuevo = (tiempo_minimo_nuevo + 4 * tiempo_medio_nuevo + tiempo_maximo_nuevo) / 6 * cantidad_nueva
 
@@ -903,6 +950,7 @@ def modificar_actividad():
             finally:
                 cursor.close()
                 conexion.close()
+
 
 
 # Crear sección para administrar usuarios
@@ -1051,8 +1099,6 @@ def reemplazar_accion(texto):
 
 
 
-#Historial de mosififcaciones
-
 def mostrar_historial_modificaciones():
     esquemas_validos = ['empresa1', 'empresa2', 'empresa3', 'empresa4', 'empresa5', 'public']
     esquema = st.session_state.get('empresa', 'public')
@@ -1079,6 +1125,12 @@ def mostrar_historial_modificaciones():
                 if filas:
                     # Crear DataFrame
                     df = pd.DataFrame(filas, columns=['ID Usuario', 'Nombre de Usuario', 'Empresa', 'Acción', 'Fecha'])
+
+                    # Convertir la hora de UTC a hora local de Costa Rica
+                    utc = pytz.utc
+                    cr_tz = pytz.timezone('America/Costa_Rica')
+                    df['Fecha'] = pd.to_datetime(df['Fecha'], utc=True).dt.tz_convert(cr_tz).dt.strftime('%Y-%m-%d %H:%M:%S')
+
                     st.subheader(f"📄 Historial de Modificaciones ({esquema})")
                     df['Acción'] = df['Acción'].apply(reemplazar_accion)
 
@@ -1104,8 +1156,6 @@ def mostrar_historial_modificaciones():
             st.error("❌ No se pudo establecer la conexión con la base de datos.")
     except Exception as e:
         st.error(f"Error al cargar el historial desde el esquema '{esquema}': {e}")
-
-
 
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1401,8 +1451,13 @@ def agregar_actividadU(funcionario_id):
     comentarios = st.text_area("Comentarios de la actividad:")
 
     if st.button("Agregar Actividad"):
-        if not (funcion and cantidad and tiempo_minimo and tiempo_medio and tiempo_maximo and unidad):
+        if not (funcion and cantidad and tiempo_minimo is not None and tiempo_medio is not None and tiempo_maximo is not None and unidad):
             st.warning("Todos los campos deben ser completados.")
+            return
+
+        # Validación de orden de tiempos
+        if tiempo_minimo > tiempo_medio or tiempo_minimo > tiempo_maximo or tiempo_medio > tiempo_maximo:
+            st.warning("El tiempo mínimo no puede ser mayor que el medio o el máximo, y el medio no puede ser mayor que el máximo.")
             return
 
         if unidad == "minutos":
@@ -1498,6 +1553,7 @@ def agregar_actividadU(funcionario_id):
             finally:
                 cursor.close()
                 conexion.close()
+
 
 
 
@@ -1929,19 +1985,14 @@ def menu_principal():
         st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.nombre_usuario}")
         st.sidebar.markdown(f"🔑 **Rol:** {st.session_state.rol}")
 
-        if st.sidebar.button("🔁 Cerrar sesión"):
-            for key in ["logueado", "rol", "usuario_id", "nombre_usuario", "empresa"]:
-                st.session_state.pop(key, None)
-            st.rerun()
-
         # ----- SUPERADMIN -----
         if st.session_state.rol == "Superadmin":
             opcion = st.sidebar.radio("Selecciona una opción (Superadmin):", [
                 "🏠 Inicio",
-                "🔍 Ver Carga de Trabajo por ID",
+                "🔍 Ver Carga de Trabajo por Id",
                 "📋 Ver Todas las Cargas de Trabajo",
-                "➕ Detalles de Periodo de Estudio",
-                "📝 Agregar Actividad",
+                "➕ Ingresar Datos del Periodo de Estudio",
+                "📝 Agregar Actividades por Id",
                 "❌ Eliminar Funcionario",
                 "🗑️ Eliminar Actividad",
                 "✏️ Modificar Actividad",
@@ -1954,10 +2005,10 @@ def menu_principal():
         elif st.session_state.rol == "Administrador":
             opcion = st.sidebar.radio("Selecciona una opción:", [
                 "🏠 Inicio",
-                "🔍 Ver Carga de Trabajo por ID",
+                "🔍 Ver Carga de Trabajo por Id",
                 "📋 Ver Todas las Cargas de Trabajo",
-                "➕ Detalles de Periodo de Estudio",
-                "📝 Agregar Actividad",
+                "➕ Ingresar Datos del Periodo de Estudio",
+                "📝 Agregar Actividades por Id",
                 "❌ Eliminar Funcionario",
                 "🗑️ Eliminar Actividad",
                 "✏️ Modificar Actividad",
@@ -1969,7 +2020,7 @@ def menu_principal():
         elif st.session_state.rol == "Usuario":
             opcion = st.sidebar.radio("Selecciona una opción:", [
                 "🏠 Inicio",
-                "➕ Detalles de Periodo de EstudioU",
+                "➕ Ingresar Datos del Periodo de Estudio",
                 "📝 Agregar ActividadU",
                 "✏️ Modificar ActividadU",
                 "🗑️ Eliminar ActividadU",
@@ -1982,13 +2033,13 @@ def menu_principal():
         # ---------------- FUNCIONES PARA TODOS LOS ROLES ----------------
         if opcion == "🏠 Inicio":
             home()
-        elif opcion == "🔍 Ver Carga de Trabajo por ID":
+        elif opcion == "🔍 Ver Carga de Trabajo por Id":
             ver_carga_trabajo()
         elif opcion == "📋 Ver Todas las Cargas de Trabajo":
             ver_todas_cargas_trabajo()
-        elif opcion == "➕ Detalles de Periodo de Estudio":
+        elif opcion == "➕ Ingresar Datos del Periodo de Estudio":
             agregar_funcionario()
-        elif opcion == "📝 Agregar Actividad":
+        elif opcion == "📝 Agregar Actividades por Id":
             agregar_actividad()
         elif opcion == "❌ Eliminar Funcionario":
             eliminar_funcionario()
@@ -2000,7 +2051,7 @@ def menu_principal():
             mostrar_historial_modificaciones()
         elif opcion == "🆕 Crear Nueva Cuenta":
             crear_cuenta()
-        elif opcion == "➕ Detalles de Periodo de EstudioU":
+        elif opcion == "➕ Ingresar Detalles de Periodo de Estudio":
             agregar_funcionarioU()
         elif opcion == "📝 Agregar ActividadU":
             agregar_actividadU(st.session_state.usuario_id)
@@ -2013,7 +2064,15 @@ def menu_principal():
         elif opcion == "📤 Cargar actividades Excel":
             cargar_actividades_excell()
 
+        # --- Botón cerrar sesión al final ---
+        if st.sidebar.button("🔁 Cerrar sesión"):
+            for key in ["logueado", "rol", "usuario_id", "nombre_usuario", "empresa"]:
+                st.session_state.pop(key, None)
+            st.rerun()
 
 
 # Función principal
 menu_principal()
+
+
+
