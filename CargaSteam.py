@@ -58,7 +58,7 @@ st.sidebar.image(logo_image, width=150)
 import psycopg2
 import streamlit as st
 
-DATABASE_URL = DATABASE_URL = "postgresql://postgres:Admin1234@localhost:5432/bd_admin"
+DATABASE_URL = "postgresql://postgres:QkFKwJddJxaBOhgocAOsYRHinUJOjJXF@gondola.proxy.rlwy.net:36246/railway"
 
 
 def cargar_esquemas_validos():
