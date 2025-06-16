@@ -2010,12 +2010,11 @@ def cargar_actividades_excell():
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-# Login
 def login():
     st.title("🔐 Inicio de Sesión")
     
-    # Cargar esquemas válidos desde la base de datos
-    esquemas_disponibles = sorted(ESQUEMAS_VALIDOS)  # Ya lo cargaste al inicio del script
+    # Cargar esquemas válidos desde la base de datos excluyendo 'empresa5'
+    esquemas_disponibles = sorted([e for e in ESQUEMAS_VALIDOS if e != "empresa5"])
     empresa = st.selectbox("Selecciona la empresa a la que perteneces", esquemas_disponibles)
 
     # Crear nuevo esquema desde el sidebar
@@ -2060,6 +2059,7 @@ def login():
                 st.error(f"Error al conectar a la base de datos: {e}")
         else:
             st.warning("Por favor, completa todos los campos.")
+
 
 
 # Estado de sesión
