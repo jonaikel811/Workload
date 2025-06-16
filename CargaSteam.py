@@ -162,7 +162,7 @@ def crear_esquema_nuevo(nombre_esquema):
             # Clonar estructura y datos desde empresa5 al nuevo esquema
             exito = clonar_esquema("empresa5", nombre_esquema)
             if exito:
-                st.success(f"Esquema '{nombre_esquema}' creado y clonado correctamente desde 'empresa5' ✅")
+                st.success(f"Esquema '{nombre_esquema}' creadocorrectamente ✅")
             else:
                 st.error(f"El esquema '{nombre_esquema}' fue creado pero ocurrió un error al clonar las tablas.")
 
