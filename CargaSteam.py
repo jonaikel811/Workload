@@ -58,10 +58,30 @@ st.sidebar.image(logo_image, width=150)
 import psycopg2
 import streamlit as st
 
-DATABASE_URL = "postgresql://postgres:eqWOTMrsVejNlRKwcNhvPiRbXRyKYyKM@nozomi.proxy.rlwy.net:11260/railway"
+DATABASE_URL = DATABASE_URL = "postgresql://postgres:Admin1234@localhost:5432/bd_admin"
 
-# Lista de esquemas válidos
-ESQUEMAS_VALIDOS = {"public", "empresa1", "empresa2", "empresa3", "empresa4", "empresa5"}
+
+def cargar_esquemas_validos():
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT schema_name 
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+              AND schema_name NOT LIKE 'pg_%'
+        """)
+        resultados = cur.fetchall()
+        cur.close()
+        conn.close()
+        return set(row[0] for row in resultados)
+    except Exception as e:
+        st.error(f"Error al cargar esquemas: {e}")
+        return {"public"}  # fallback
+
+# Usar los esquemas válidos cargados desde la base de datos
+ESQUEMAS_VALIDOS = cargar_esquemas_validos()
+
 
 def get_connection(empresa):
     try:
@@ -82,26 +102,77 @@ def get_connection(empresa):
         st.error(f"Error de conexión: {e}")
         return None
 
-# Ejemplo de uso:
-if __name__ == "__main__":
-    conn = get_connection("empresa1")
-    if conn:
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT version();")
-            print(cur.fetchone())
+def clonar_esquema(origen, destino):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+
+        # Obtener todas las tablas del esquema origen
+        cur.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = %s AND table_type='BASE TABLE';
+        """, (origen,))
+        tablas = cur.fetchall()
+
+        for (tabla,) in tablas:
+            # Crear tabla en esquema destino con estructura igual a la de origen
+            cur.execute(f"""
+                CREATE TABLE {destino}.{tabla} (LIKE {origen}.{tabla} INCLUDING ALL);
+            """)
+            # Copiar datos de la tabla origen a la tabla destino
+            cur.execute(f"""
+                INSERT INTO {destino}.{tabla} SELECT * FROM {origen}.{tabla};
+            """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error clonando esquema: {e}")
+        return False
+
+def crear_esquema_nuevo(nombre_esquema):
+    try:
+        if not nombre_esquema.isidentifier():
+            st.warning("El nombre del esquema no es válido. Debe contener solo letras, números o guiones bajos y no empezar con un número.")
+            return
+
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+
+        # Verificar si ya existe
+        cur.execute("""
+            SELECT schema_name 
+            FROM information_schema.schemata 
+            WHERE schema_name = %s
+        """, (nombre_esquema,))
+        if cur.fetchone():
+            st.warning(f"El esquema '{nombre_esquema}' ya existe.")
             cur.close()
-        except Exception as e:
-            print(f"Error ejecutando consulta: {e}")
-        finally:
             conn.close()
-    else:
-        print("No se pudo conectar a la base de datos.")
-def home():
-    st.title("Bienvenido a la Aplicación de Cargas de Trabajo")
-    st.write("""
-    Workload ofrece un seguimiento eficiente y en tiempo real de las asignaciones laborales, facilitando la gestión de tareas y aumentando la productividad en distintos departamentos o equipos. Cuenta con una interfaz intuitiva que permite monitorear cargas de trabajo, asignar responsabilidades y optimizar la distribución de tareas, garantizando así una operación más organizada y eficaz.
-    """)
+            return
+        else:
+            # Crear el esquema vacío primero
+            cur.execute(f"CREATE SCHEMA {nombre_esquema};")
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            # Clonar estructura y datos desde empresa5 al nuevo esquema
+            exito = clonar_esquema("empresa5", nombre_esquema)
+            if exito:
+                st.success(f"Esquema '{nombre_esquema}' creado y clonado correctamente desde 'empresa5' ✅")
+            else:
+                st.error(f"El esquema '{nombre_esquema}' fue creado pero ocurrió un error al clonar las tablas.")
+
+            # Recargar la lista de esquemas válidos
+            global ESQUEMAS_VALIDOS
+            ESQUEMAS_VALIDOS = cargar_esquemas_validos()
+
+    except Exception as e:
+        st.error(f"Error al crear el esquema: {e}")
+
 
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -344,20 +415,20 @@ def eliminar_funcionario():
                 cursor.close()
                 conexion.close()
 
-
-
-
 # Función para agregar un nuevo funcionario
 def agregar_funcionario():
     # Campo de entrada para el ID del funcionario
     funcionario_id = st.text_input("Id del funcionario")
-    
+
     # Verificación de empresa (tenant)
     tenant = st.session_state.get('empresa', 'public')
     if not tenant:
         st.error("No se ha seleccionado ninguna empresa.")
         return
-    
+
+    # Campo para ingresar los días laborales del período de estudio
+    dias_laborales = st.number_input("Días laborales del período de estudio", min_value=1, value=260)
+
     nombre = ""
     if funcionario_id:
         conexion = get_connection(tenant)
@@ -399,7 +470,6 @@ def agregar_funcionario():
             return
 
         # Cálculos de horas
-        dias_laborales = 260
         total_laborable_base = jornada * dias_laborales
         horas_no_laborables = (vacaciones + feriados + incapacidades + permiso) * jornada
         total_laborable = total_laborable_base + horas_extra - horas_no_laborables
@@ -465,7 +535,7 @@ def agregar_funcionario():
                             (carga_total_trabajo, funcionario_id)
                         )
                         st.write(f"Carga total de trabajo actualizada: {carga_total_trabajo}%")
-                
+
                 # Insertar en el historial
                 nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
                 empresa = st.session_state.get('empresa', 'Desconocida')
@@ -483,6 +553,7 @@ def agregar_funcionario():
             finally:
                 cursor.close()
                 conexion.close()
+
 
 # Función para agregar actividad
 def agregar_actividad():
@@ -623,141 +694,136 @@ def agregar_actividad():
 
 # Función para eliminar actividades seleccionadas y actualizar la carga total de trabajo
 def eliminar_actividad():
-    # Verificar que el tenant esté definido en st.session_state
-    tenant = st.session_state.get('empresa', 'public')
-    
-    # Validar que el tenant sea uno de los esquemas permitidos o "public"
-    if not tenant or tenant not in ['empresa1', 'empresa2', 'empresa3', 'empresa4', 'empresa5', 'public']:
-        st.error("No se ha definido la empresa (tenant) correctamente. Por favor, seleccione una empresa válida.")
+    # Obtener el esquema (empresa) desde la sesión
+    esquema = st.session_state.get('empresa', 'public')
+
+    # Validar si el esquema es válido
+    if esquema not in ESQUEMAS_VALIDOS:
+        st.error(f"❌ Esquema '{esquema}' no válido.")
         return
 
-    # Solicitar el ID del funcionario con un key único
+    # Solicitar el ID del funcionario
     funcionario_id = st.text_input("ID del funcionario:", key="funcionario_id_input")
 
     if funcionario_id:
-        # Conectar a la base de datos usando get_connection y pasando el tenant
-        conexion = get_connection(tenant)
-        if conexion:
-            cursor = conexion.cursor()
+        # Conectar al esquema seleccionado
+        conn = get_connection(esquema)
+        if conn:
+            cursor = conn.cursor()
             try:
-                # Verificar si el ID del funcionario existe en el esquema correspondiente
-                cursor.execute(f'SELECT * FROM {tenant}.tb_funcionarios WHERE "Id" = %s', (funcionario_id,))
+                # Verificar si el funcionario existe
+                cursor.execute(f'SELECT * FROM {esquema}.tb_funcionarios WHERE "Id" = %s', (funcionario_id,))
                 if not cursor.fetchone():
-                    st.warning(f"El ID {funcionario_id} no existe en la base de datos.")
+                    st.warning(f"⚠️ El ID {funcionario_id} no existe en la base de datos.")
                     return
 
-                # Obtener las actividades del funcionario
+                # Obtener actividades del funcionario
                 cursor.execute(f''' 
                     SELECT numero_actividad, funcion, tiempo_por_actividad, tiempo_medio, tiempo_maximo, 
                            id, cantidad, tiempo_minimo, unidad, comentarios
-                    FROM {tenant}.tb_actividades 
+                    FROM {esquema}.tb_actividades 
                     WHERE id_funcionario = %s
                 ''', (funcionario_id,))
                 actividades = cursor.fetchall()
                 
                 if not actividades:
-                    st.warning(f"El funcionario con ID {funcionario_id} no tiene actividades registradas.")
+                    st.warning(f"⚠️ El funcionario con ID {funcionario_id} no tiene actividades registradas.")
                     return
 
-                # Crear una lista de diccionarios con los datos de las actividades
+                # Armar lista de actividades como diccionarios
                 actividades_data = []
-                for actividad in actividades:
-                    numero_actividad, funcion, tiempo_por_actividad, tiempo_medio, tiempo_maximo, id_actividad, cantidad, tiempo_minimo, unidad, comentarios = actividad
-                    actividad_dict = {
-                        "Numero Actividad": numero_actividad,
-                        "Funcion": funcion,
-                        "Tiempo por Actividad (hrs)": tiempo_por_actividad,
-                        "Tiempo Medio (hrs)": tiempo_medio,
-                        "Tiempo Maximo (hrs)": tiempo_maximo,
-                        "Cantidad": cantidad,
-                        "Tiempo Minimo (hrs)": tiempo_minimo,
+                for a in actividades:
+                    numero, funcion, tpa, tmed, tmax, id_act, cant, tmin, unidad, comentarios = a
+                    actividades_data.append({
+                        "Número": numero,
+                        "Función": funcion,
+                        "Tiempo Actividad (hrs)": tpa,
+                        "Tiempo Medio (hrs)": tmed,
+                        "Tiempo Máximo (hrs)": tmax,
+                        "Cantidad": cant,
+                        "Tiempo Mínimo (hrs)": tmin,
                         "Unidad": unidad,
                         "Comentarios": comentarios,
-                    }
-                    actividades_data.append(actividad_dict)
+                    })
 
-                # Convertir la lista de diccionarios en un DataFrame de pandas
-                df_actividades = pd.DataFrame(actividades_data)
+                # Mostrar en DataFrame
+                df = pd.DataFrame(actividades_data)
+                st.dataframe(df)
 
-                # Mostrar la tabla con las actividades
-                st.dataframe(df_actividades)
+                # Seleccionar actividad a eliminar
+                actividad_a_eliminar = st.selectbox("Seleccione la actividad a eliminar", [a[0] for a in actividades])
 
-                # Selección de actividad para eliminar (usar el número de actividad)
-                actividad_a_eliminar = st.selectbox("Seleccione la actividad a eliminar", [actividad[0] for actividad in actividades])
-
-                # Confirmación de eliminación
                 if st.button("Confirmar eliminación de actividad seleccionada"):
-                    # Buscar el tiempo de la actividad seleccionada
-                    cursor.execute(f''' 
-                        SELECT tiempo_por_actividad FROM {tenant}.tb_actividades
+                    # Obtener tiempo de la actividad
+                    cursor.execute(f'''
+                        SELECT tiempo_por_actividad FROM {esquema}.tb_actividades
                         WHERE id_funcionario = %s AND numero_actividad = %s
                     ''', (funcionario_id, actividad_a_eliminar))
-                    actividad_data = cursor.fetchone()
-                    if actividad_data:
-                        tiempo_por_actividad = actividad_data[0]
+                    datos = cursor.fetchone()
 
-                        # Eliminar la actividad seleccionada
-                        cursor.execute(
-                            f'DELETE FROM {tenant}.tb_actividades WHERE id_funcionario = %s AND numero_actividad = %s',
-                            (funcionario_id, actividad_a_eliminar)
-                        )
+                    if datos:
+                        tiempo_actividad = datos[0]
 
-                        # Actualizar el tiempo laborado en la tabla tb_carga_trabajo
-                        cursor.execute(
-                            f'SELECT tiempo_laborado FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s', 
-                            (funcionario_id,)
-                        )
-                        carga_trabajo_data = cursor.fetchone()
-                        if carga_trabajo_data:
-                            tiempo_laborado_actual = carga_trabajo_data[0]
+                        # Eliminar actividad
+                        cursor.execute(f'''
+                            DELETE FROM {esquema}.tb_actividades
+                            WHERE id_funcionario = %s AND numero_actividad = %s
+                        ''', (funcionario_id, actividad_a_eliminar))
 
-                            # Restar el tiempo de la actividad eliminada
-                            nuevo_tiempo_laborado = tiempo_laborado_actual - tiempo_por_actividad
+                        # Actualizar tiempo laborado
+                        cursor.execute(f'''
+                            SELECT tiempo_laborado FROM {esquema}.tb_carga_trabajo
+                            WHERE funcionario_id = %s
+                        ''', (funcionario_id,))
+                        carga = cursor.fetchone()
 
-                            # Actualizar carga laboral
-                            cursor.execute(
-                                f'''
-                                UPDATE {tenant}.tb_carga_trabajo
+                        if carga:
+                            tiempo_actual = carga[0]
+                            nuevo_tiempo = tiempo_actual - tiempo_actividad
+
+                            # Actualizar tiempo laborado
+                            cursor.execute(f'''
+                                UPDATE {esquema}.tb_carga_trabajo
                                 SET tiempo_laborado = %s
                                 WHERE funcionario_id = %s
-                                ''',
-                                (nuevo_tiempo_laborado, funcionario_id)
-                            )
+                            ''', (nuevo_tiempo, funcionario_id))
 
-                            # Ahora actualizar el campo carga_total_trabajo
-                            cursor.execute(f"SELECT horas_trabajo FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s", (funcionario_id,))
+                            # Calcular y actualizar carga total
+                            cursor.execute(f'''
+                                SELECT horas_trabajo FROM {esquema}.tb_carga_trabajo
+                                WHERE funcionario_id = %s
+                            ''', (funcionario_id,))
                             row = cursor.fetchone()
+
                             if row:
-                                horas_trabajo = row[0] if row[0] else 1  # Evitar división por cero
-                                carga_total_trabajo = (nuevo_tiempo_laborado / horas_trabajo) * 100
-                                carga_total_trabajo = round(carga_total_trabajo, 2)
+                                horas_totales = row[0] or 1
+                                carga_total = round((nuevo_tiempo / horas_totales) * 100, 2)
 
-                                # Actualizar el campo carga_total_trabajo en la base de datos
-                                cursor.execute(
-                                    f"UPDATE {tenant}.tb_carga_trabajo SET carga_total_trabajo = %s WHERE funcionario_id = %s",
-                                    (carga_total_trabajo, funcionario_id)
-                                )
+                                cursor.execute(f'''
+                                    UPDATE {esquema}.tb_carga_trabajo
+                                    SET carga_total_trabajo = %s
+                                    WHERE funcionario_id = %s
+                                ''', (carga_total, funcionario_id))
 
-                        # Insertar en el historial de modificaciones
+                        # Insertar historial
                         nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
-                        accion = f"Eliminó la actividad {actividad_a_eliminar} para el funcionario con ID {funcionario_id}"
+                        accion = f"Eliminó la actividad {actividad_a_eliminar} para el funcionario {funcionario_id}"
 
-                        cursor.execute(f"""
-                            INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
+                        cursor.execute(f'''
+                            INSERT INTO {esquema}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
                             VALUES (%s, %s, %s, %s)
-                        """, (nombre_usuario, nombre_usuario, tenant, accion))
-                        conexion.commit()
+                        ''', (nombre_usuario, nombre_usuario, esquema, accion))
 
-                        # Confirmar la transacción
-                        conexion.commit()
-                        st.success(f"La actividad {actividad_a_eliminar} ha sido eliminada correctamente. Carga laboral actualizada.")
+                        conn.commit()
+                        st.success(f"✅ Actividad {actividad_a_eliminar} eliminada correctamente.")
                     else:
-                        st.warning(f"No se pudo encontrar el tiempo de la actividad {actividad_a_eliminar}.")
+                        st.warning("⚠️ No se encontró el tiempo de la actividad seleccionada.")
             except Exception as e:
-                st.error(f"Error al eliminar la actividad: {e}")
+                st.error(f"❌ Error: {e}")
             finally:
                 cursor.close()
-                conexion.close()
+                conn.close()
+
 
 
 #Modificar actividad menu admin
@@ -955,6 +1021,10 @@ def modificar_actividad():
 
 # Crear sección para administrar usuarios
 def crear_cuenta():
+    import psycopg2  # asegúrate de tener psycopg2 instalado
+    import pandas as pd
+    import streamlit as st
+
     st.subheader("🧑‍💼 Gestión de Cuentas de Usuario")
 
     if "empresa" not in st.session_state:
@@ -962,18 +1032,40 @@ def crear_cuenta():
 
     esquema = st.session_state["empresa"]  # Usamos 'empresa' en lugar de 'esquema'
 
-    # Verificación del esquema
-    if esquema not in ["public", "empresa1", "empresa2", "empresa3", "empresa4", "empresa5"]:
-        st.error(f"Esquema '{esquema}' no válido.")
+    # Obtener conexión general para verificar esquemas disponibles
+    conn_general = get_connection("public")  # o el esquema que tenga acceso a pg_catalog
+    if not conn_general:
+        st.error("Error al conectar a la base de datos para obtener esquemas.")
         return
 
-    # Conectar a la base de datos
+    try:
+        cur_general = conn_general.cursor()
+        # Consulta para obtener todos los esquemas que no sean internos de postgres
+        cur_general.execute("""
+            SELECT schema_name 
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+            ORDER BY schema_name
+        """)
+        esquemas_validos = [row[0] for row in cur_general.fetchall()]
+        cur_general.close()
+        conn_general.close()
+    except Exception as e:
+        st.error(f"Error al obtener esquemas: {e}")
+        return
+
+    # Verificación dinámica del esquema
+    if esquema not in esquemas_validos:
+        st.error(f"Esquema '{esquema}' no válido. Esquemas válidos: {', '.join(esquemas_validos)}")
+        return
+
+    # Conectar a la base de datos con el esquema seleccionado
     conn = get_connection(esquema)
     if not conn:
         st.error("Error al conectar a la base de datos.")
         return
 
-    cursor = conn.cursor()  # Crear el cursor aquí
+    cursor = conn.cursor()
 
     # Ver usuarios existentes
     st.markdown("### 👥 Usuarios Existentes")
@@ -1020,7 +1112,7 @@ def crear_cuenta():
                     conn.commit()
 
                     st.success(f"Usuario '{nuevo_usuario}' creado correctamente.")
-                    st.rerun()  # Usamos st.rerun() para recargar la aplicación
+                    st.experimental_rerun()  # Usamos experimental_rerun para recargar la aplicación
             except Exception as e:
                 st.error(f"Error al crear el usuario: {e}")
         else:
@@ -1058,17 +1150,17 @@ def crear_cuenta():
                 """, (nombre_usuario, nombre_usuario, empresa, accion))
                 conn.commit()
 
-                # Si el usuario actualizado es el mismo que el que está logueado (usualmente el admin),
-                # actualizar el rol en la sesión para reflejar los cambios.
-                if id_mod == st.session_state.usuario_id:  # Asegúrate de que "usuario_id" esté definido
-                    st.session_state.rol = nuevo_rol_mod  # Actualiza el rol en la sesión del usuario.
+                # Actualizar rol en sesión si es el mismo usuario
+                if id_mod == st.session_state.get("usuario_id"):
+                    st.session_state.rol = nuevo_rol_mod
 
-                st.rerun()  # Recargar la aplicación
+                st.experimental_rerun()
         except Exception as e:
             st.error(f"Error al actualizar el usuario: {e}")
-    # Cerrar cursor y conexión
+
     cursor.close()
     conn.close()
+
 
     ##////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1100,62 +1192,66 @@ def reemplazar_accion(texto):
 
 
 def mostrar_historial_modificaciones():
-    esquemas_validos = ['empresa1', 'empresa2', 'empresa3', 'empresa4', 'empresa5', 'public']
-    esquema = st.session_state.get('empresa', 'public')
-
-    if esquema not in esquemas_validos:
-        st.error("❌ Esquema no válido.")
-        return
-
     try:
-        if 'conn' not in st.session_state or st.session_state.conn is None:
-            st.session_state.conn = get_connection(esquema)
-
-        if st.session_state.conn:
-            with st.session_state.conn.cursor() as cursor:
-                consulta = f'''
-                    SELECT usuario_id, nombre_usuario, empresa, accion, fecha
-                    FROM {esquema}.tb_historial_modificaciones
-                    ORDER BY fecha DESC
-                '''
-                cursor.execute(consulta)
-                columnas = [desc[0] for desc in cursor.description]
-                filas = cursor.fetchall()
-                
-                if filas:
-                    # Crear DataFrame
-                    df = pd.DataFrame(filas, columns=['ID Usuario', 'Nombre de Usuario', 'Empresa', 'Acción', 'Fecha'])
-
-                    # Convertir la hora de UTC a hora local de Costa Rica
-                    utc = pytz.utc
-                    cr_tz = pytz.timezone('America/Costa_Rica')
-                    df['Fecha'] = pd.to_datetime(df['Fecha'], utc=True).dt.tz_convert(cr_tz).dt.strftime('%Y-%m-%d %H:%M:%S')
-
-                    st.subheader(f"📄 Historial de Modificaciones ({esquema})")
-                    df['Acción'] = df['Acción'].apply(reemplazar_accion)
-
-                    # Añadir estilo con HTML
-                    st.markdown("""
-                        <style>
-                            .stTable td, .stTable th {
-                                padding: 8px;
-                                text-align: left;
-                            }
-                            .stTable {
-                                width: 100% !important;
-                                table-layout: auto !important;
-                            }
-                        </style>
-                    """, unsafe_allow_html=True)
-
-                    # Mostrar la tabla con un estilo personalizado
-                    st.dataframe(df, use_container_width=True)
-                else:
-                    st.warning(f"No hay modificaciones registradas en el esquema '{esquema}'.")
-        else:
+        # Obtener la conexión al esquema 'public' para consultar los esquemas disponibles
+        conn = get_connection('public')
+        if not conn:
             st.error("❌ No se pudo establecer la conexión con la base de datos.")
+            return
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+        """)
+        esquemas = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        # Extraer los nombres de los esquemas
+        esquemas_validos = [esquema[0] for esquema in esquemas]
+
+        # Obtener el esquema actual desde la sesión
+        esquema = st.session_state.get('empresa', 'public')
+
+        # Verificación del esquema
+        if esquema not in esquemas_validos:
+            st.error(f"❌ Esquema '{esquema}' no válido.")
+            return
+
+        # Conectar al esquema seleccionado
+        conn = get_connection(esquema)
+        if not conn:
+            st.error("❌ No se pudo establecer la conexión con la base de datos.")
+            return
+
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT usuario_id, nombre_usuario, empresa, accion, fecha
+            FROM {esquema}.tb_historial_modificaciones
+            ORDER BY fecha DESC
+        """)
+        filas = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        if filas:
+            df = pd.DataFrame(filas, columns=['ID Usuario', 'Nombre de Usuario', 'Empresa', 'Acción', 'Fecha'])
+
+            # Convertir la hora de UTC a hora local de Costa Rica
+            utc = pytz.utc
+            cr_tz = pytz.timezone('America/Costa_Rica')
+            df['Fecha'] = pd.to_datetime(df['Fecha'], utc=True).dt.tz_convert(cr_tz).dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            st.subheader(f"📄 Historial de Modificaciones ({esquema})")
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.warning(f"No hay modificaciones registradas en el esquema '{esquema}'.")
+
     except Exception as e:
-        st.error(f"Error al cargar el historial desde el esquema '{esquema}': {e}")
+        st.error(f"Error al cargar el historial: {e}")
+
 
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1163,9 +1259,11 @@ from decimal import Decimal
 
 # Función modificar actividad menú usuario
 def modificar_actividadU():
-    tenant = st.session_state.get('empresa', 'public')  # Verificación de empresa
-    if not tenant:
-        st.error("No se ha seleccionado una empresa. Por favor, selecciona una empresa.")
+    ESQUEMAS_VALIDOS = cargar_esquemas_validos()
+    tenant = st.session_state.get('empresa')
+    
+    if not tenant or tenant not in ESQUEMAS_VALIDOS:
+        st.error("No se ha seleccionado una empresa válida.")
         return
 
     funcionario_id_login = st.session_state.usuario_id
@@ -1217,7 +1315,6 @@ def modificar_actividadU():
             if actividad_data:
                 funcion_actual, tiempo_medio_actual, tiempo_maximo_actual, cantidad_actual, tiempo_minimo_actual, unidad_actual, comentarios_actual = actividad_data
 
-                # Mostrar los campos en el orden solicitado
                 funcion_nueva = st.text_input("Función", value=funcion_actual)
                 cantidad_nueva = st.number_input("Cantidad", value=int(cantidad_actual), min_value=0)
                 tiempo_minimo_nuevo = st.number_input("Tiempo mínimo (hrs)", value=float(tiempo_minimo_actual), min_value=0.0, step=0.1)
@@ -1230,14 +1327,17 @@ def modificar_actividadU():
                     if not funcion_nueva or not unidad_nueva:
                         st.warning("Por favor, completa todos los campos obligatorios.")
                         return
+                    
+                    # Validación de tiempos
+                    if tiempo_minimo_nuevo > tiempo_medio_nuevo or tiempo_minimo_nuevo > tiempo_maximo_nuevo or tiempo_medio_nuevo > tiempo_maximo_nuevo:
+                        st.warning("Error: El tiempo mínimo no puede ser mayor que el tiempo medio o el tiempo máximo, y el tiempo medio no puede ser mayor que el tiempo máximo.")
+                        return
 
-                    # Conversión segura
                     tiempo_medio_nuevo = Decimal(str(tiempo_medio_nuevo))
                     tiempo_maximo_nuevo = Decimal(str(tiempo_maximo_nuevo))
                     cantidad_nueva = Decimal(str(cantidad_nueva))
                     tiempo_minimo_nuevo = Decimal(str(tiempo_minimo_nuevo))
 
-                    # Fórmula para calcular el tiempo laborado por actividad
                     tiempo_laborado_nuevo = (tiempo_minimo_nuevo + 4 * tiempo_medio_nuevo + tiempo_maximo_nuevo) / 6 * cantidad_nueva
 
                     cursor.execute(f''' 
@@ -1249,7 +1349,6 @@ def modificar_actividadU():
                           cantidad_nueva, tiempo_minimo_nuevo, unidad_nueva, comentarios_nuevos,
                           funcionario_id_login, actividad_a_modificar))
 
-                    # Actualizar el tiempo por actividad
                     cursor.execute(f'''
                         UPDATE {tenant}.tb_actividades
                         SET tiempo_por_actividad = %s
@@ -1258,7 +1357,6 @@ def modificar_actividadU():
                         (tiempo_laborado_nuevo, funcionario_id_login, actividad_a_modificar)
                     )
 
-                    # Actualizar el tiempo laborado en la tabla tb_carga_trabajo
                     cursor.execute(f'''
                         UPDATE {tenant}.tb_carga_trabajo
                         SET tiempo_laborado = (
@@ -1270,7 +1368,6 @@ def modificar_actividadU():
                         WHERE funcionario_id = %s;
                     ''', (funcionario_id_login, funcionario_id_login))
 
-                    # Verificar si el funcionario ya tiene un registro en tb_carga_trabajo
                     cursor.execute(f'SELECT * FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s', (funcionario_id_login,))
                     if not cursor.fetchone():
                         cursor.execute(f'''
@@ -1283,11 +1380,10 @@ def modificar_actividadU():
                             ));
                         ''', (funcionario_id_login, funcionario_id_login))
 
-                    # Actualizar el campo carga_total_trabajo
                     cursor.execute(f"SELECT horas_trabajo, tiempo_laborado FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s", (funcionario_id_login,))
                     row = cursor.fetchone()
                     if row:
-                        horas_trabajo = row[0] if row[0] else 1  # Evitar división por cero
+                        horas_trabajo = row[0] if row[0] else 1
                         tiempo_laborado = row[1] if row[1] else 0
                         carga_total_trabajo = (tiempo_laborado / horas_trabajo) * 100
                         carga_total_trabajo = round(carga_total_trabajo, 2)
@@ -1296,7 +1392,6 @@ def modificar_actividadU():
                             UPDATE {tenant}.tb_carga_trabajo SET carga_total_trabajo = %s WHERE funcionario_id = %s
                         ''', (carga_total_trabajo, funcionario_id_login))
 
-                    # Insertar en el historial de modificaciones
                     nombre_usuario = st.session_state.get('nombre_usuario', 'Desconocido')
                     empresa = st.session_state.get('empresa', 'Desconocida')
                     accion = f"Modificó la actividad N° {actividad_a_modificar} del funcionario con ID {funcionario_id_login}"
@@ -1314,6 +1409,7 @@ def modificar_actividadU():
         finally:
             cursor.close()
             conexion.close()
+
 
 # Función eliminar actividad menú usuario con agregar historial
 def eliminar_actividadU():
@@ -1554,14 +1650,14 @@ def agregar_actividadU(funcionario_id):
                 cursor.close()
                 conexion.close()
 
-
-
-
+# Función para agregar un nuevo funcionario vinculado al usuario logueado
 # Función para agregar un nuevo funcionario vinculado al usuario logueado
 def agregar_funcionarioU():
-    tenant = st.session_state.get('empresa', 'public')
-    if not tenant:
-        st.error("No se ha seleccionado una empresa. Por favor, seleccione una empresa antes de proceder.")
+    ESQUEMAS_VALIDOS = cargar_esquemas_validos()
+    tenant = st.session_state.get('empresa')
+
+    if not tenant or tenant not in ESQUEMAS_VALIDOS:
+        st.error("No se ha seleccionado una empresa válida. Por favor, seleccione una antes de continuar.")
         return
 
     usuario_id_logueado = st.session_state.usuario_id
@@ -1584,6 +1680,10 @@ def agregar_funcionarioU():
         cursor.close()
         conexion.close()
 
+    st.markdown("### Información del período de estudio")
+    st.markdown("Por favor, indique cuántos días laborales hay en el período que desea evaluar (por ejemplo, 130 para medio año, 65 para un trimestre, etc.)")
+    dias_laborales = st.number_input("Días laborales del período de estudio", min_value=1, value=260)
+
     dependencia = st.text_input("Dependencia")
     puesto = st.text_input("Puesto")
     jornada = st.number_input("Jornada (Horas/día)", min_value=0.0)
@@ -1599,7 +1699,6 @@ def agregar_funcionarioU():
             st.warning("Los campos Dependencia y Puesto son obligatorios.")
             return
 
-        dias_laborales = 260
         total_laborable_base = jornada * dias_laborales
         horas_no_laborables = (vacaciones + feriados + incapacidades + permiso) * jornada
         total_laborable = total_laborable_base + horas_extra - horas_no_laborables
@@ -1621,7 +1720,7 @@ def agregar_funcionarioU():
             cursor.execute(
                 f"""INSERT INTO {tenant}.tb_funcionarios 
                 ("Id", "Nombre", "Dependencia", "Puesto", "Jornada", "Feriados", "Horas_extra", 
-                "Vacaciones", "Incapacidades", "Permiso", "Otro/Comentarios")
+                 "Vacaciones", "Incapacidades", "Permiso", "Otro/Comentarios")
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (usuario_id_logueado, nombre, dependencia, puesto, jornada, feriados, horas_extra,
                  vacaciones, incapacidades, permiso, comentarios)
@@ -1633,29 +1732,24 @@ def agregar_funcionarioU():
             cursor.execute(f"SELECT * FROM {tenant}.tb_carga_trabajo WHERE funcionario_id = %s", (id_funcionario,))
             if cursor.fetchone():
                 cursor.execute(
-                    f"""
-                    UPDATE {tenant}.tb_carga_trabajo 
-                    SET horas_trabajo = %s
-                    WHERE funcionario_id = %s
-                    """,
+                    f"""UPDATE {tenant}.tb_carga_trabajo 
+                        SET horas_trabajo = %s
+                        WHERE funcionario_id = %s""",
                     (total_laborable, id_funcionario)
                 )
             else:
                 cursor.execute(
-                    f"""
-                    INSERT INTO {tenant}.tb_carga_trabajo (funcionario_id, horas_trabajo)
-                    VALUES (%s, %s)
-                    """,
+                    f"""INSERT INTO {tenant}.tb_carga_trabajo (funcionario_id, horas_trabajo)
+                        VALUES (%s, %s)""",
                     (id_funcionario, total_laborable)
                 )
 
             # Calcular y actualizar el porcentaje de carga total de trabajo
             cursor.execute(
-                f"""
-                SELECT tiempo_laborado, horas_trabajo 
-                FROM {tenant}.tb_carga_trabajo 
-                WHERE funcionario_id = %s
-                """, (id_funcionario,)
+                f"""SELECT tiempo_laborado, horas_trabajo 
+                    FROM {tenant}.tb_carga_trabajo 
+                    WHERE funcionario_id = %s""", 
+                (id_funcionario,)
             )
             row = cursor.fetchone()
             if row:
@@ -1664,11 +1758,9 @@ def agregar_funcionarioU():
                 if horas_trabajo > 0:
                     carga_total_trabajo = round((tiempo_laborado / horas_trabajo) * 100, 2)
                     cursor.execute(
-                        f"""
-                        UPDATE {tenant}.tb_carga_trabajo
-                        SET carga_total_trabajo = %s
-                        WHERE funcionario_id = %s
-                        """,
+                        f"""UPDATE {tenant}.tb_carga_trabajo
+                            SET carga_total_trabajo = %s
+                            WHERE funcionario_id = %s""",
                         (carga_total_trabajo, id_funcionario)
                     )
                     st.write(f"Carga total de trabajo actualizada: {carga_total_trabajo}%")
@@ -1678,10 +1770,12 @@ def agregar_funcionarioU():
             empresa = st.session_state.get('empresa', 'Desconocida')
             accion = f"Agregó el funcionario {nombre} con ID {id_funcionario}"
 
-            cursor.execute(f"""
-                INSERT INTO {tenant}.tb_historial_modificaciones (usuario_id, nombre_usuario, empresa, accion)
-                VALUES (%s, %s, %s, %s)
-            """, (usuario_id_logueado, nombre_usuario, empresa, accion))
+            cursor.execute(
+                f"""INSERT INTO {tenant}.tb_historial_modificaciones 
+                    (usuario_id, nombre_usuario, empresa, accion)
+                    VALUES (%s, %s, %s, %s)""",
+                (usuario_id_logueado, nombre_usuario, empresa, accion)
+            )
 
             conexion.commit()
             st.success("Funcionario agregado correctamente.")
@@ -1920,11 +2014,19 @@ def cargar_actividades_excell():
 def login():
     st.title("🔐 Inicio de Sesión")
     
-    # Selección de empresa
-    empresa = st.selectbox("Selecciona la empresa a la que perteneces", [
-        "empresa1", "empresa2", "empresa3", "empresa4", "empresa5", "public"
-    ])
-    
+    # Cargar esquemas válidos desde la base de datos
+    esquemas_disponibles = sorted(ESQUEMAS_VALIDOS)  # Ya lo cargaste al inicio del script
+    empresa = st.selectbox("Selecciona la empresa a la que perteneces", esquemas_disponibles)
+
+    # Crear nuevo esquema desde el sidebar
+    with st.sidebar.expander("➕ Crear nuevo esquema"):
+        nuevo_esquema = st.text_input("Nombre del nuevo esquema")
+        if st.button("Crear esquema"):
+            if nuevo_esquema:
+                crear_esquema_nuevo(nuevo_esquema.strip().lower())
+            else:
+                st.warning("Debe ingresar un nombre para el esquema.")
+
     # Ingreso de credenciales
     id_usuario = st.text_input("ID de Usuario")
     contrasena = st.text_input("Contraseña", type="password")
@@ -1933,32 +2035,32 @@ def login():
         if id_usuario and contrasena:
             try:
                 # Obtener la conexión y verificar el usuario en el esquema de la empresa seleccionada
-                conn = get_connection(empresa)  # Usamos la empresa seleccionada en la conexión
+                conn = get_connection(empresa)
                 cursor = conn.cursor()
                 cursor.execute(""" 
                     SELECT usuario, rol FROM tb_usuarios 
                     WHERE id = %s AND contrasena = %s
-                """, (id_usuario, contrasena))  # Usamos las columnas correctas
+                """, (id_usuario, contrasena))
                 resultado = cursor.fetchone()
                 conn.close()
 
                 if resultado:
                     nombre_usuario, rol = resultado
-                    # Guardamos los datos en la sesión
                     st.session_state.logueado = True
                     st.session_state.rol = rol
-                    st.session_state.usuario_id = id_usuario  # Guardamos el ID de usuario
+                    st.session_state.usuario_id = id_usuario
                     st.session_state.nombre_usuario = nombre_usuario
-                    st.session_state.empresa = empresa  # Guardamos la empresa seleccionada
+                    st.session_state.empresa = empresa
 
                     st.success(f"Bienvenido {nombre_usuario} ({rol})")
-                    st.rerun()  # Recargar la aplicación después de loguearse
+                    st.rerun()
                 else:
                     st.error("ID o contraseña incorrectos.")
             except Exception as e:
                 st.error(f"Error al conectar a la base de datos: {e}")
         else:
             st.warning("Por favor, completa todos los campos.")
+
 
 # Estado de sesión
 if "logueado" not in st.session_state:
@@ -1970,12 +2072,14 @@ if "usuario_id" not in st.session_state:
 if "nombre_usuario" not in st.session_state:
     st.session_state.nombre_usuario = ""
 
+
 # Home
 def home():
     st.title("Bienvenido a la Aplicación de Workload")
     st.write(""" 
     Workload ofrece un seguimiento eficiente y en tiempo real de las asignaciones laborales, facilitando la gestión de tareas y aumentando la productividad en distintos departamentos o equipos. Cuenta con una interfaz intuitiva que permite monitorear cargas de trabajo, asignar responsabilidades y optimizar la distribución de tareas, garantizando así una operación más organizada y eficaz.
     """)
+
 
 def menu_principal():
     if not st.session_state.logueado:
@@ -2020,7 +2124,7 @@ def menu_principal():
         elif st.session_state.rol == "Usuario":
             opcion = st.sidebar.radio("Selecciona una opción:", [
                 "🏠 Inicio",
-                "➕ Ingresar Datos del Periodo de Estudio",
+                "➕ Ingresar Datos del Periodo de EstudioU",
                 "📝 Agregar ActividadU",
                 "✏️ Modificar ActividadU",
                 "🗑️ Eliminar ActividadU",
@@ -2051,7 +2155,7 @@ def menu_principal():
             mostrar_historial_modificaciones()
         elif opcion == "🆕 Crear Nueva Cuenta":
             crear_cuenta()
-        elif opcion == "➕ Ingresar Detalles de Periodo de Estudio":
+        elif opcion == "➕ Ingresar Datos del Periodo de EstudioU":
             agregar_funcionarioU()
         elif opcion == "📝 Agregar ActividadU":
             agregar_actividadU(st.session_state.usuario_id)
@@ -2072,7 +2176,5 @@ def menu_principal():
 
 
 # Función principal
+
 menu_principal()
-
-
-
