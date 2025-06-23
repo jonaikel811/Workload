@@ -58,7 +58,7 @@ st.sidebar.image(logo_image, width=150)
 import psycopg2
 import streamlit as st
 
-DATABASE_URL = "postgresql://postgres:FjtlidvBDTCJtcWrKwhXNShXKclFJKDJ@shortline.proxy.rlwy.net:37906/railway"
+DATABASE_URL="postgresql://neondb_owner:npg_hVi6UqRpg8xQ@ep-bitter-star-a8r79rwh-pooler.eastus2.azure.neon.tech:5432/neondb?sslmode=require"
 
 
 def cargar_esquemas_validos():
